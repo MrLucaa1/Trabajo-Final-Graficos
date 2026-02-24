@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="utf-8">
+    <title>Neon Night Drive - Luca</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #050505;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: #fff;
+        }
+
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            padding: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            border: 1px solid #ff00ff;
+            border-radius: 10px;
+            box-shadow: 0 0 15px #ff00ff;
+            pointer-events: none;
+            backdrop-filter: blur(5px);
+        }
+
+        h1 {
+            margin: 0 0 10px 0;
+            font-size: 24px;
+            text-transform: uppercase;
+            letter-spacing: 3px;
+            color: #00ffff;
+            text-shadow: 0 0 10px #00ffff;
+        }
+
+        p {
+            margin: 5px 0;
+            font-size: 14px;
+            color: #aaa;
+        }
+
+        .key {
+            display: inline-block;
+            padding: 2px 8px;
+            border: 1px solid #fff;
+            border-radius: 4px;
+            font-family: monospace;
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        #speed-o-meter {
+            position: absolute;
+            bottom: 40px;
+            right: 40px;
+            text-align: right;
+        }
+
+        #speed-value {
+            font-size: 48px;
+            font-weight: bold;
+            color: #ff00ff;
+            text-shadow: 0 0 20px #ff00ff;
+        }
+
+        canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+    </style>
+
+    <!-- Shaders para el Coche e Iluminación -->
+    <script id="carVertexShader" type="x-shader/x-vertex">#version 300 es
+    layout(location=0) in vec3 VertexPosition;
+    layout(location=1) in vec3 VertexNormal;
+
+    uniform mat4 modelMatrix;
+    uniform mat4 viewMatrix;
+    uniform mat4 projectionMatrix;
+    uniform mat3 normalMatrix;
+
+    out vec3 vNormal;
+    out vec3 vPos;
+    out float vDist;
+
+    void main() {
+        vec4 worldPos = modelMatrix * vec4(VertexPosition, 1.0);
+        vec4 eyePos = viewMatrix * worldPos;
+        vPos = vec3(eyePos);
+        vNormal = normalize(normalMatrix * VertexNormal);
+        vDist = -eyePos.z; // Distancia para la niebla
+        gl_Position = projectionMatrix * eyePos;
+    }
+    </script>
+
+    <script id="carFragmentShader" type="x-shader/x-fragment">#version 300 es
+    precision mediump float;
+
+    in vec3 vNormal;
+    in vec3 vPos;
+    in float vDist;
+    
+    out vec4 fragmentColor;
+
+    uniform vec3 lightPos;
+    uniform vec3 carColor;
+    
+    // Niebla
+    const vec3 fogColor = vec3(0.02, 0.02, 0.05);
+    const float fogStart = 10.0;
+    const float fogEnd = 40.0;
+
+    void main() {
+        vec3 N = normalize(vNormal);
+        vec3 L = normalize(lightPos - vPos);
+        vec3 V = normalize(-vPos);
+        
+        // Toon Shading simplificado con borde (esquema neón)
+        float edge = dot(N, V);
+        if (abs(edge) < 0.25) {
+            fragmentColor = vec4(0.0, 1.0, 1.0, 1.0); // Borde Cian
+            return;
+        }
+
+        float NdotL = max(0.0, dot(N, L));
+        float intensity = 0.4;
+        if (NdotL > 0.8) intensity = 1.0;
+        else if (NdotL > 0.4) intensity = 0.7;
+
+        vec3 color = intensity * carColor;
+
+        // Aplicar Niebla
+        float fogFactor = clamp((fogEnd - vDist) / (fogEnd - fogStart), 0.0, 1.0);
+        fragmentColor = vec4(mix(fogColor, color, fogFactor), 1.0);
+    }
+    </script>
+
+    <!-- Shaders para el Suelo Infinito (Grid Neón) -->
+    <script id="groundVertexShader" type="x-shader/x-vertex">#version 300 es
+    layout(location=0) in vec3 VertexPosition;
+
+    uniform mat4 modelViewMatrix;
+    uniform mat4 projectionMatrix;
+    uniform float worldZ;
+
+    out vec2 vUV;
+    out float vDist;
+
+    void main() {
+        vUV = VertexPosition.xz + vec2(0.0, worldZ); 
+        vec4 eyePos = modelViewMatrix * vec4(VertexPosition, 1.0);
+        vDist = -eyePos.z;
+        gl_Position = projectionMatrix * eyePos;
+    }
+    </script>
+
+    <script id="groundFragmentShader" type="x-shader/x-fragment">#version 300 es
+    precision mediump float;
+
+    in vec2 vUV;
+    in float vDist;
+    out vec4 fragmentColor;
+
+    uniform float time;
+
+    const vec3 fogColor = vec3(0.02, 0.02, 0.05);
+    const float fogStart = 5.0;
+    const float fogEnd = 30.0;
+
+    void main() {
+        // Crear rejilla neón
+        vec2 grid = abs(fract(vUV - 0.5) - 0.5) / fwidth(vUV);
+        float line = min(grid.x, grid.y);
+        float colorAlpha = 1.0 - min(line, 1.0);
+        
+        vec3 gridColor = vec3(0.8, 0.0, 0.8); // Magenta Neón
+        
+        // Brillo pulsante
+        gridColor *= (1.0 + 0.2 * sin(time * 2.0));
+
+        vec3 finalColor = mix(vec3(0.01), gridColor, colorAlpha);
+
+        // Niebla
+        float fogFactor = clamp((fogEnd - vDist) / (fogEnd - fogStart), 0.0, 1.0);
+        fragmentColor = vec4(mix(fogColor, finalColor, fogFactor), 1.0);
+    }
+    </script>
+
+</head>
+
+<body>
+    <div id="ui">
+        <h1>Neon Night Drive</h1>
+        <p>Mantén <span class="key">W</span> para acelerar</p>
+        <p>Usa el rato para orbitar cámara</p>
+    </div>
+
+    <div id="speed-o-meter">
+        <div id="speed-value">0</div>
+        <div style="color: #00ffff; letter-spacing: 2px;">KM/H</div>
+    </div>
+
+    <canvas id="myCanvas"></canvas>
+
+    <!-- Librerías y Lógica -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gl-matrix/2.4.0/gl-matrix.js"></script>
+    <script src="main.js"></script>
+</body>
+
+</html>
