@@ -24,6 +24,7 @@
             box-shadow: 0 0 15px #ff00ff;
             pointer-events: none;
             backdrop-filter: blur(5px);
+            z-index: 10;
         }
 
         h1 {
@@ -55,6 +56,7 @@
             bottom: 40px;
             right: 40px;
             text-align: right;
+            z-index: 10;
         }
 
         #speed-value {
@@ -83,14 +85,16 @@
 
     out vec3 vNormal;
     out vec3 vPos;
+    out vec3 vWorldPos;
     out float vDist;
 
     void main() {
         vec4 worldPos = modelMatrix * vec4(VertexPosition, 1.0);
         vec4 eyePos = viewMatrix * worldPos;
         vPos = vec3(eyePos);
+        vWorldPos = worldPos.xyz;
         vNormal = normalize(normalMatrix * VertexNormal);
-        vDist = -eyePos.z; // Distancia para la niebla
+        vDist = -eyePos.z; 
         gl_Position = projectionMatrix * eyePos;
     }
     </script>
@@ -100,54 +104,105 @@
 
     in vec3 vNormal;
     in vec3 vPos;
+    in vec3 vWorldPos;
     in float vDist;
     
     out vec4 fragmentColor;
 
-    uniform vec3 lightPos;
     uniform vec3 carColor;
+    uniform int uFogActive;
+    uniform float time;
+    uniform int isBuilding;
     
-    // Niebla
-    const vec3 fogColor = vec3(0.02, 0.02, 0.05);
-    const float fogStart = 10.0;
-    const float fogEnd = 40.0;
+    const vec3 fogColor = vec3(0.5, 0.5, 0.5); 
+    const float fogStartNormal = 40.0;
+    const float fogEndNormal = 120.0;
+    const float fogStartActive = 1.0;
+    const float fogEndActive = 12.0;
 
     void main() {
         vec3 N = normalize(vNormal);
-        vec3 L = normalize(lightPos - vPos);
+        vec3 L = normalize(vec3(5.0, 10.0, 5.0)); 
         vec3 V = normalize(-vPos);
         
-        // Toon Shading simplificado con borde (esquema neón)
-        float edge = dot(N, V);
-        if (abs(edge) < 0.25) {
-            fragmentColor = vec4(0.0, 1.0, 1.0, 1.0); // Borde Cian
-            return;
+        vec3 ambientNight = vec3(0.02, 0.02, 0.08);
+        vec3 moonlightColor = vec3(0.6, 0.7, 0.9);
+        
+        // GI basado en altura del mundo (Uniforme)
+        float bounceFactor = exp(-vWorldPos.y * 0.2); 
+        vec3 giBounce = vec3(0.4, 0.0, 0.4) * bounceFactor; 
+
+        vec3 baseColor = carColor;
+
+        if (isBuilding == 1) {
+            // Usar vWorldPos para una rejilla estática y uniforme
+            vec2 uv = vWorldPos.xz + vWorldPos.xy + vWorldPos.zy;
+            vec2 grid = abs(fract(uv * 0.8 - 0.5) - 0.5);
+            float line = min(grid.x, grid.y);
+            float gridAlpha = 1.0 - smoothstep(0.0, 0.08, line);
+            
+            // Ventanas estáticas en el mundo
+            vec2 winPos = floor(vWorldPos.xz * 1.5 + vWorldPos.xy * 1.5);
+            float winSeed = fract(sin(dot(winPos, vec2(12.9898, 78.233))) * 43758.5453);
+            float window = (winSeed > 0.9) ? (0.6 + 0.4 * sin(time * 2.0 + winSeed * 10.0)) : 0.0;
+
+            baseColor = mix(vec3(0.04, 0.04, 0.06), carColor, gridAlpha);
+            baseColor += vec3(0.0, 0.9, 1.0) * window;
+        } else {
+            float edge = dot(N, V);
+            if (abs(edge) < 0.25) {
+                baseColor = vec3(0.0, 1.0, 1.0);
+            } else {
+                float NdotL = max(0.0, dot(N, L));
+                baseColor *= (NdotL > 0.4) ? 1.0 : 0.3;
+            }
         }
 
-        float NdotL = max(0.0, dot(N, L));
-        float intensity = 0.4;
-        if (NdotL > 0.8) intensity = 1.0;
-        else if (NdotL > 0.4) intensity = 0.7;
+        vec3 finalColor = baseColor * (ambientNight + giBounce) + (moonlightColor * max(0.0, dot(N, L)) * 0.5);
 
-        vec3 color = intensity * carColor;
-
-        // Aplicar Niebla
-        float fogFactor = clamp((fogEnd - vDist) / (fogEnd - fogStart), 0.0, 1.0);
-        fragmentColor = vec4(mix(fogColor, color, fogFactor), 1.0);
+        float start = (uFogActive == 1) ? fogStartActive : fogStartNormal;
+        float end = (uFogActive == 1) ? fogEndActive : fogEndNormal;
+        float fogFactor = clamp((end - vDist) / (end - start), 0.0, 1.0);
+        
+        fragmentColor = vec4(mix(fogColor, finalColor, fogFactor), 1.0);
     }
     </script>
 
-    <!-- Shaders para el Suelo Infinito (Grid Neón) -->
+    <!-- Shader para LLuvia 3D -->
+    <script id="rainVertexShader" type="x-shader/x-vertex">#version 300 es
+    layout(location=0) in vec3 VertexPosition;
+    uniform mat4 viewMatrix;
+    uniform mat4 projectionMatrix;
+    uniform float rainOffset;
+    uniform float carZ;
+
+    void main() {
+        vec3 pos = VertexPosition;
+        // Hacer que la lluvia caiga y se repita
+        pos.y = mod(pos.y - rainOffset, 20.0); 
+        // Hacer que la lluvia siga al coche
+        pos.z += carZ;
+        
+        gl_Position = projectionMatrix * viewMatrix * vec4(pos, 1.0);
+    }
+    </script>
+
+    <script id="rainFragmentShader" type="x-shader/x-fragment">#version 300 es
+    precision mediump float;
+    out vec4 fragmentColor;
+    void main() {
+        fragmentColor = vec4(0.4, 0.6, 1.0, 0.6);
+    }
+    </script>
+
+    <!-- Shaders para el Suelo con Carretera -->
     <script id="groundVertexShader" type="x-shader/x-vertex">#version 300 es
     layout(location=0) in vec3 VertexPosition;
-
     uniform mat4 modelViewMatrix;
     uniform mat4 projectionMatrix;
     uniform float worldZ;
-
     out vec2 vUV;
     out float vDist;
-
     void main() {
         vUV = VertexPosition.xz + vec2(0.0, worldZ); 
         vec4 eyePos = modelViewMatrix * vec4(VertexPosition, 1.0);
@@ -158,43 +213,59 @@
 
     <script id="groundFragmentShader" type="x-shader/x-fragment">#version 300 es
     precision mediump float;
-
     in vec2 vUV;
     in float vDist;
     out vec4 fragmentColor;
-
     uniform float time;
+    uniform int uFogActive;
 
-    const vec3 fogColor = vec3(0.02, 0.02, 0.05);
-    const float fogStart = 5.0;
-    const float fogEnd = 30.0;
+    const vec3 fogColor = vec3(0.5, 0.5, 0.5);
+    const float fogStartNormal = 30.0;
+    const float fogEndNormal = 120.0;
 
     void main() {
-        // Crear rejilla neón
+        // Carretera más pequeña (Ancho total 6 -> distToCenter < 3.0)
+        float distToCenter = abs(vUV.x);
+        bool isRoad = distToCenter < 3.0;
+        
+        vec3 asphaltColor = vec3(0.02, 0.02, 0.04);
+        vec3 gridColor = vec3(0.8, 0.0, 0.8);
+        
         vec2 grid = abs(fract(vUV - 0.5) - 0.5) / fwidth(vUV);
         float line = min(grid.x, grid.y);
-        float colorAlpha = 1.0 - min(line, 1.0);
+        float gridAlpha = 1.0 - min(line, 1.0);
         
-        vec3 gridColor = vec3(0.8, 0.0, 0.8); // Magenta Neón
+        vec3 finalColor;
+        if (isRoad) {
+            finalColor = asphaltColor;
+            // Bordes Cian
+            if (distToCenter < 0.1 || (distToCenter > 2.8 && distToCenter < 3.0)) {
+                finalColor = vec3(0.0, 1.0, 1.0); 
+            }
+            // Línea discontinua amarilla
+            float dash = step(0.5, fract(vUV.y * 1.5));
+            if (abs(distToCenter - 1.5) < 0.05) {
+                finalColor = mix(finalColor, vec3(1.0, 1.0, 0.0), dash);
+            }
+        } else {
+            finalColor = mix(vec3(0.01), gridColor, gridAlpha);
+        }
+
+        float start = (uFogActive == 1) ? 1.0 : fogStartNormal;
+        float end = (uFogActive == 1) ? 12.0 : fogEndNormal;
+        float fogFactor = clamp((end - vDist) / (end - start), 0.0, 1.0);
         
-        // Brillo pulsante
-        gridColor *= (1.0 + 0.2 * sin(time * 2.0));
-
-        vec3 finalColor = mix(vec3(0.01), gridColor, colorAlpha);
-
-        // Niebla
-        float fogFactor = clamp((fogEnd - vDist) / (fogEnd - fogStart), 0.0, 1.0);
         fragmentColor = vec4(mix(fogColor, finalColor, fogFactor), 1.0);
     }
     </script>
-
 </head>
 
 <body>
     <div id="ui">
         <h1>Neon Night Drive</h1>
-        <p>Mantén <span class="key">W</span> para acelerar</p>
-        <p>Usa el rato para orbitar cámara</p>
+        <p>Utiliza <span class="key">WASD</span> para conducir</p>
+        <p>Presiona <span class="key">R</span> para la NIEBLA | <span class="key">L</span> para la LLUVIA</p>
+        <p>Utiliza el ratón para mover la cámara</p>
     </div>
 
     <div id="speed-o-meter">
@@ -203,8 +274,6 @@
     </div>
 
     <canvas id="myCanvas"></canvas>
-
-    <!-- Librerías y Lógica -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/gl-matrix/2.4.0/gl-matrix.js"></script>
     <script src="main.js"></script>
 </body>

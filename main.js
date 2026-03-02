@@ -1,34 +1,88 @@
 var gl;
-var carProgram, groundProgram;
-var cubeModel, wheelModel, groundModel;
+var carProgram, groundProgram, rainProgram;
+var cubeModel, wheelModel, groundModel, rainModel;
 
 // Estado del juego
 var carPos = [0, 0, 0];
 var carSpeed = 0.0;
-var maxSpeed = 0.1; // 0.1 * 200 = 20 km/h
-var acceleration = 0.002;
-var friction = 0.001;
-var isAccelerating = false;
+var maxSpeed = 0.3; // 0.3 * 166 ≈ 50 km/h
+var acceleration = 0.003;
+var friction = 0.0015;
+var fogActive = 0;
+var rainActive = 0;
+var rainFactor = 0.0;
+
+// Teclas
+var keys = { w: false, a: false, s: false, d: false };
 
 // Cámara
-var camera = { dist: 6.0, yaw: Math.PI, pitch: 0.3 };
+var camera = { dist: 7.5, yaw: Math.PI, pitch: 0.3 };
 var drag = false, lastX = 0, lastY = 0;
 
-// Modelos
+// Edificios
+var buildings = [];
+
+function generateBuildings() {
+    buildings = [];
+    const CITY_LENGTH = -15000;
+    const ROAD_MARGIN = 4.0; // Carretera es ±3.0, margen de seguridad
+
+    for (let z = 100; z > CITY_LENGTH; z -= 15) {
+        for (let row = 0; row < 3; row++) {
+            let side = (Math.random() > 0.5) ? 1 : -1;
+
+            let height = 5 + Math.random() * 60;
+            let width = 6 + Math.random() * 12;
+            let depth = 6 + Math.random() * 12;
+
+            // Garantizar que el borde del edificio esté fuera de la carretera (Ancho ±3.0)
+            let minX = 3.0 + (width / 2) + 0.5; // Carretera + medio edificio + margen
+            let xPos = (minX + Math.random() * 25) * side;
+
+            let color = [Math.random() * 0.3, 0.05, 0.5 + Math.random() * 0.5];
+            if (Math.random() > 0.5) color = [0.5 + Math.random() * 0.5, 0.05, Math.random() * 0.3];
+
+            buildings.push({
+                pos: [xPos, height / 2, z + Math.random() * 15],
+                scale: [width, height, depth],
+                color: color
+            });
+
+            if (Math.random() > 0.7) {
+                buildings.push({
+                    pos: [xPos, height + 4, z + Math.random() * 10],
+                    scale: [width * 0.6, 8, depth * 0.6],
+                    color: [color[0] * 1.4, color[1] * 1.4, color[2] * 1.4]
+                });
+            }
+        }
+    }
+}
+
+function createRain(count = 2000) {
+    let vertices = [];
+    for (let i = 0; i < count; i++) {
+        let x = (Math.random() - 0.5) * 60;
+        let y = Math.random() * 20;
+        let z = (Math.random() - 0.5) * 60;
+        // Línea corta para la gota
+        vertices.push(x, y, z);
+        vertices.push(x, y + 0.5, z);
+    }
+    let vbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+    return { vbo: vbo, count: count * 2 };
+}
+
 function createCube() {
     let s = 0.5;
     let vertices = [
-        // Front
         -s, -s, s, 0, 0, 1, s, -s, s, 0, 0, 1, s, s, s, 0, 0, 1, -s, s, s, 0, 0, 1,
-        // Back
         -s, -s, -s, 0, 0, -1, -s, s, -s, 0, 0, -1, s, s, -s, 0, 0, -1, s, -s, -s, 0, 0, -1,
-        // Top
         -s, s, -s, 0, 1, 0, -s, s, s, 0, 1, 0, s, s, s, 0, 1, 0, s, s, -s, 0, 1, 0,
-        // Bottom
         -s, -s, -s, 0, -1, 0, s, -s, -s, 0, -1, 0, s, -s, s, 0, -1, 0, -s, -s, s, 0, -1, 0,
-        // Right
         s, -s, -s, 1, 0, 0, s, s, -s, 1, 0, 0, s, s, s, 1, 0, 0, s, -s, s, 1, 0, 0,
-        // Left
         -s, -s, -s, -1, 0, 0, -s, -s, s, -1, 0, 0, -s, s, s, -1, 0, 0, -s, s, -s, -1, 0, 0
     ];
     let indices = [];
@@ -36,11 +90,9 @@ function createCube() {
     return { vertices, indices };
 }
 
-function createCylinder(n = 20) {
-    let vertices = [];
-    let indices = [];
+function createCylinder(n = 24) {
+    let vertices = []; let indices = [];
     let r = 1.0, h = 1.0;
-    // Lado
     for (let i = 0; i <= n; i++) {
         let a = i / n * Math.PI * 2;
         let c = Math.cos(a), s = Math.sin(a);
@@ -55,7 +107,7 @@ function createCylinder(n = 20) {
 }
 
 function createGround() {
-    let size = 100.0;
+    let size = 200.0;
     let vertices = [
         -size, 0, -size, 0, 1, 0,
         size, 0, -size, 0, 1, 0,
@@ -70,13 +122,17 @@ function initBuffers(model) {
     model.vbo = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, model.vbo);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(model.vertices), gl.STATIC_DRAW);
-    model.ibo = gl.createBuffer();
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, model.ibo);
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(model.indices), gl.STATIC_DRAW);
+    if (model.indices) {
+        model.ibo = gl.createBuffer();
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, model.ibo);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(model.indices), gl.STATIC_DRAW);
+    }
 }
 
 function compileShader(id, type) {
-    let str = document.getElementById(id).textContent;
+    let el = document.getElementById(id);
+    if (!el) return null;
+    let str = el.textContent;
     let s = gl.createShader(type);
     gl.shaderSource(s, str);
     gl.compileShader(s);
@@ -92,58 +148,83 @@ function createProgram(vId, fId) {
     return p;
 }
 
+function checkCollision(pos) {
+    let carHalfW = 0.65, carHalfL = 1.05;
+    for (let b of buildings) {
+        let bHalfW = b.scale[0] / 2, bHalfL = b.scale[2] / 2;
+        if (Math.abs(pos[0] - b.pos[0]) < carHalfW + bHalfW && Math.abs(pos[2] - b.pos[2]) < carHalfL + bHalfL) return true;
+    }
+    return false;
+}
+
 function init() {
     let canvas = document.getElementById("myCanvas");
     gl = canvas.getContext("webgl2");
-    if (!gl) return alert("WebGL 2 not supported");
+    if (!gl) return;
 
     gl.enable(gl.DEPTH_TEST);
-    gl.clearColor(0.02, 0.02, 0.05, 1.0);
+    gl.clearColor(0.01, 0.01, 0.03, 1.0);
 
-    // Programas
     carProgram = createProgram("carVertexShader", "carFragmentShader");
     groundProgram = createProgram("groundVertexShader", "groundFragmentShader");
+    rainProgram = createProgram("rainVertexShader", "rainFragmentShader");
 
-    // Uniforms Car
     carProgram.uModel = gl.getUniformLocation(carProgram, "modelMatrix");
     carProgram.uView = gl.getUniformLocation(carProgram, "viewMatrix");
     carProgram.uProj = gl.getUniformLocation(carProgram, "projectionMatrix");
     carProgram.uNorm = gl.getUniformLocation(carProgram, "normalMatrix");
-    carProgram.uLight = gl.getUniformLocation(carProgram, "lightPos");
     carProgram.uColor = gl.getUniformLocation(carProgram, "carColor");
+    carProgram.uFogActive = gl.getUniformLocation(carProgram, "uFogActive");
+    carProgram.uTime = gl.getUniformLocation(carProgram, "time");
+    carProgram.uIsBuilding = gl.getUniformLocation(carProgram, "isBuilding");
 
-    // Uniforms Ground
     groundProgram.uMV = gl.getUniformLocation(groundProgram, "modelViewMatrix");
     groundProgram.uProj = gl.getUniformLocation(groundProgram, "projectionMatrix");
     groundProgram.uWorldZ = gl.getUniformLocation(groundProgram, "worldZ");
     groundProgram.uTime = gl.getUniformLocation(groundProgram, "time");
+    groundProgram.uFogActive = gl.getUniformLocation(groundProgram, "uFogActive");
 
-    // Modelos
+    rainProgram.uView = gl.getUniformLocation(rainProgram, "viewMatrix");
+    rainProgram.uProj = gl.getUniformLocation(rainProgram, "projectionMatrix");
+    rainProgram.uOffset = gl.getUniformLocation(rainProgram, "rainOffset");
+    rainProgram.uCarZ = gl.getUniformLocation(rainProgram, "carZ");
+
     cubeModel = createCube(); initBuffers(cubeModel);
     wheelModel = createCylinder(); initBuffers(wheelModel);
     groundModel = createGround(); initBuffers(groundModel);
+    rainModel = createRain();
+    generateBuildings();
 
-    // Eventos
-    window.onkeydown = e => { if (e.key.toLowerCase() === 'w') isAccelerating = true; };
-    window.onkeyup = e => { if (e.key.toLowerCase() === 'w') isAccelerating = false; };
+    window.onkeydown = e => {
+        if (e.key.toLowerCase() === 'w') keys.w = true;
+        if (e.key.toLowerCase() === 's') keys.s = true;
+        if (e.key.toLowerCase() === 'a') keys.a = true;
+        if (e.key.toLowerCase() === 'd') keys.d = true;
+        if (e.key.toLowerCase() === 'r') fogActive = 1 - fogActive;
+        if (e.key.toLowerCase() === 'l') rainActive = 1 - rainActive;
+    };
+    window.onkeyup = e => {
+        if (e.key.toLowerCase() === 'w') keys.w = false;
+        if (e.key.toLowerCase() === 's') keys.s = false;
+        if (e.key.toLowerCase() === 'a') keys.a = false;
+        if (e.key.toLowerCase() === 'd') keys.d = false;
+    };
 
     canvas.onpointerdown = e => { drag = true; lastX = e.clientX; lastY = e.clientY; canvas.setPointerCapture(e.pointerId); };
-    canvas.onpointerup = e => { drag = false; };
+    canvas.onpointerup = e => drag = false;
     canvas.onpointermove = e => {
         if (!drag) return;
         camera.yaw += (e.clientX - lastX) * 0.005;
-        camera.pitch = Math.max(0.1, Math.min(Math.PI / 2 - 0.1, camera.pitch + (e.clientY - lastY) * 0.005));
+        camera.pitch = Math.max(0.1, Math.min(1.4, camera.pitch + (e.clientY - lastY) * 0.005));
         lastX = e.clientX; lastY = e.clientY;
     };
     window.onresize = () => { canvas.width = window.innerWidth; canvas.height = window.innerHeight; };
     window.onresize();
-
     requestAnimationFrame(render);
 }
 
-function drawModel(model, program, isCar = true) {
+function drawModel(model, isCar = true) {
     gl.bindBuffer(gl.ARRAY_BUFFER, model.vbo);
-    // Pos: loc 0, Norm: loc 1
     gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
     gl.enableVertexAttribArray(0);
     if (isCar) {
@@ -155,84 +236,93 @@ function drawModel(model, program, isCar = true) {
 }
 
 function render(time) {
-    time *= 0.001;
+    let dt = time * 0.001;
     gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-    // Lógica de movimiento
-    if (isAccelerating) carSpeed = Math.min(maxSpeed, carSpeed + acceleration);
-    else carSpeed = Math.max(0, carSpeed - friction);
-    carPos[2] -= carSpeed;
+    if (keys.w) carSpeed = Math.min(maxSpeed, carSpeed + acceleration);
+    else if (keys.s) carSpeed = Math.max(-maxSpeed / 2, carSpeed - acceleration);
+    else carSpeed *= 0.985;
 
-    document.getElementById("speed-value").innerText = Math.round(carSpeed * 200);
+    // Movimiento lateral limitado a la carretera
+    let steerSpeed = 0.06;
+    let nextX = carPos[0];
+    if (keys.a) nextX -= steerSpeed;
+    if (keys.d) nextX += steerSpeed;
 
-    // Matrices Cámara (Sigue al coche)
-    let eye = [
-        carPos[0] + camera.dist * Math.cos(camera.pitch) * Math.sin(camera.yaw),
-        carPos[1] + camera.dist * Math.sin(camera.pitch),
-        carPos[2] + camera.dist * Math.cos(camera.pitch) * Math.cos(camera.yaw)
-    ];
-    let view = mat4.create();
-    mat4.lookAt(view, eye, [carPos[0], carPos[1] + 1, carPos[2]], [0, 1, 0]);
+    // Límite de la carretera (Ancho 3.0 - media anchura coche 0.65)
+    nextX = Math.max(-2.35, Math.min(2.35, nextX));
 
-    let proj = mat4.create();
-    mat4.perspective(proj, Math.PI / 3, gl.canvas.width / gl.canvas.height, 0.1, 1000.0);
+    let newPos = [nextX, carPos[1], carPos[2] - carSpeed];
+    if (!checkCollision(newPos)) carPos = newPos; else carSpeed = 0;
 
-    // ---- DIBUJAR SUELO ----
+    document.getElementById("speed-value").innerText = Math.round(Math.abs(carSpeed) * 166);
+
+    let eye = [carPos[0] + camera.dist * Math.cos(camera.pitch) * Math.sin(camera.yaw), carPos[1] + camera.dist * Math.sin(camera.pitch), carPos[2] + camera.dist * Math.cos(camera.pitch) * Math.cos(camera.yaw)];
+    let view = mat4.create(); mat4.lookAt(view, eye, [carPos[0], carPos[1] + 1, carPos[2]], [0, 1, 0]);
+    let proj = mat4.create(); mat4.perspective(proj, Math.PI / 3, gl.canvas.width / gl.canvas.height, 0.1, 1000.0);
+
+    // DIBUJAR LLUVIA 3D
+    if (rainActive) {
+        gl.useProgram(rainProgram);
+        gl.uniformMatrix4fv(rainProgram.uView, false, view);
+        gl.uniformMatrix4fv(rainProgram.uProj, false, proj);
+        gl.uniform1f(rainProgram.uOffset, dt * 15.0); // Velocidad caída
+        gl.uniform1f(rainProgram.uCarZ, carPos[2]);
+        gl.bindBuffer(gl.ARRAY_BUFFER, rainModel.vbo);
+        gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(0);
+        gl.drawArrays(gl.LINES, 0, rainModel.count);
+    }
+
+    // DIBUJAR SUELO
     gl.useProgram(groundProgram);
     gl.uniformMatrix4fv(groundProgram.uProj, false, proj);
     gl.uniform1f(groundProgram.uWorldZ, carPos[2]);
-    gl.uniform1f(groundProgram.uTime, time);
+    gl.uniform1f(groundProgram.uTime, dt);
+    gl.uniform1i(groundProgram.uFogActive, fogActive);
+    let mG = mat4.create(); mat4.translate(mG, mG, [0, 0, carPos[2]]);
+    gl.uniformMatrix4fv(groundProgram.uMV, false, mat4.multiply(mat4.create(), view, mG));
+    drawModel(groundModel, false);
 
-    let mGround = mat4.create();
-    mat4.translate(mGround, mGround, [0, 0, carPos[2]]);
-    let mvGround = mat4.multiply(mat4.create(), view, mGround);
-    gl.uniformMatrix4fv(groundProgram.uMV, false, mvGround);
-
-    drawModel(groundModel, groundProgram, false);
-
-    // ---- DIBUJAR COCHE ----
+    // DIBUJAR EDIFICIOS Y COCHE
     gl.useProgram(carProgram);
     gl.uniformMatrix4fv(carProgram.uView, false, view);
     gl.uniformMatrix4fv(carProgram.uProj, false, proj);
-    gl.uniform3fv(carProgram.uLight, [5, 10, carPos[2] + 5]);
-    gl.uniform3fv(carProgram.uColor, [0.1, 0.1, 0.4]); // Azul oscuro base
+    gl.uniform1i(carProgram.uFogActive, fogActive);
+    gl.uniform1f(carProgram.uTime, dt);
 
-    // Cuerpo
-    let mBody = mat4.create();
-    mat4.translate(mBody, mBody, [carPos[0], carPos[1] + 0.4, carPos[2]]);
-    mat4.scale(mBody, mBody, [1.2, 0.4, 2.0]);
-    updateCarUniforms(mBody);
-    drawModel(cubeModel, carProgram);
-
-    // Cabina
-    let mCabin = mat4.create();
-    mat4.translate(mCabin, mCabin, [carPos[0], carPos[1] + 0.8, carPos[2] + 0.2]);
-    mat4.scale(mCabin, mCabin, [0.8, 0.4, 0.8]);
-    updateCarUniforms(mCabin);
-    drawModel(cubeModel, carProgram);
-
-    // Ruedas
-    gl.uniform3fv(carProgram.uColor, [0.05, 0.05, 0.05]); // Ruedas negras
-    let wheelOffsets = [[0.7, 0, 0.6], [-0.7, 0, 0.6], [0.7, 0, -0.6], [-0.7, 0, -0.6]];
-    wheelOffsets.forEach(off => {
-        let mWheel = mat4.create();
-        mat4.translate(mWheel, mWheel, [carPos[0] + off[0], carPos[1] + 0.2, carPos[2] + off[2]]);
-        mat4.rotateZ(mWheel, mWheel, Math.PI / 2);
-        // Rotación de rodamiento basada en posición Z
-        mat4.rotateY(mWheel, mWheel, carPos[2] * 2);
-        mat4.scale(mWheel, mWheel, [0.3, 0.2, 0.3]);
-        updateCarUniforms(mWheel);
-        drawModel(wheelModel, carProgram);
+    gl.uniform1i(carProgram.uIsBuilding, 1);
+    buildings.forEach(b => {
+        if (Math.abs(b.pos[2] - carPos[2]) < 500) {
+            gl.uniform3fv(carProgram.uColor, b.color);
+            let m = mat4.create(); mat4.translate(m, m, b.pos); mat4.scale(m, m, b.scale);
+            gl.uniformMatrix4fv(carProgram.uModel, false, m);
+            let nm = mat3.create(); mat3.normalFromMat4(nm, m);
+            gl.uniformMatrix3fv(carProgram.uNorm, false, nm);
+            drawModel(cubeModel, true);
+        }
     });
 
+    gl.uniform1i(carProgram.uIsBuilding, 0);
+    gl.uniform3fv(carProgram.uColor, [0.1, 0.1, 0.4]);
+    let mB = mat4.create(); mat4.translate(mB, mB, [carPos[0], carPos[1] + 0.4, carPos[2]]); mat4.scale(mB, mB, [1.2, 0.4, 2.0]);
+    updateCarUniforms(mB); drawModel(cubeModel, true);
+    let mC = mat4.create(); mat4.translate(mC, mC, [carPos[0], carPos[1] + 0.8, carPos[2] + 0.2]); mat4.scale(mC, mC, [0.8, 0.4, 0.8]);
+    updateCarUniforms(mC); drawModel(cubeModel, true);
+
+    gl.uniform3fv(carProgram.uColor, [0.05, 0.05, 0.05]);
+    [[0.7, 0, 0.6], [-0.7, 0, 0.6], [0.7, 0, -0.6], [-0.7, 0, -0.6]].forEach(off => {
+        let mW = mat4.create(); mat4.translate(mW, mW, [carPos[0] + off[0], carPos[1] + 0.2, carPos[2] + off[2]]);
+        mat4.rotateZ(mW, mW, Math.PI / 2); mat4.rotateY(mW, mW, carPos[2] * 2); mat4.scale(mW, mW, [0.3, 0.2, 0.3]);
+        updateCarUniforms(mW); drawModel(wheelModel, true);
+    });
     requestAnimationFrame(render);
 }
 
-function updateCarUniforms(modelMatrix) {
-    gl.uniformMatrix4fv(carProgram.uModel, false, modelMatrix);
-    let nm = mat3.create();
-    mat3.normalFromMat4(nm, modelMatrix);
+function updateCarUniforms(m) {
+    gl.uniformMatrix4fv(carProgram.uModel, false, m);
+    let nm = mat3.create(); mat3.normalFromMat4(nm, m);
     gl.uniformMatrix3fv(carProgram.uNorm, false, nm);
 }
 
